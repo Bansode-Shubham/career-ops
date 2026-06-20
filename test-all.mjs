@@ -4621,6 +4621,51 @@ try {
   fail(`kill-switch tests crashed: ${e.message}`);
 }
 
+// ── 33. BACKUP (snapshot data/ + reports/ + user files) ─────────────
+console.log('\n33. Backup');
+try {
+  const bk = await import(pathToFileURL(join(ROOT, 'backup.mjs')).href);
+
+  const f = bk.parseArgs(['--keep=30', '--out=snaps', '--list', '--json']);
+  if (f.keep === 30 && f.out === 'snaps' && f.list && f.json) pass('backup parseArgs reads --keep/--out/--list/--json');
+  else fail(`backup parseArgs → ${JSON.stringify(f)}`);
+
+  const name = bk.backupName(new Date('2026-06-21T15:30:12'));
+  if (/^career-ops-backup-2026-06-21-153012\.tar\.gz$/.test(name)) pass('backupName builds a chronological tar.gz name');
+  else fail(`backupName → ${name}`);
+
+  // planPrune keeps the newest N (input is newest-first), deletes the rest.
+  const files = ['e', 'd', 'c', 'b', 'a'];
+  if (JSON.stringify(bk.planPrune(files, 3)) === JSON.stringify(['b', 'a']) &&
+      bk.planPrune(files, 0).length === 5 &&
+      bk.planPrune(files, 10).length === 0) {
+    pass('planPrune retains the newest --keep and prunes the rest');
+  } else fail(`planPrune → ${JSON.stringify(bk.planPrune(files, 3))}`);
+
+  // backupSources only returns paths that exist under the given root.
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'co-backup-'));
+  mkdirSync(join(tmpRoot, 'data'), { recursive: true });
+  writeFileSync(join(tmpRoot, 'cv.md'), '# cv\n');
+  const srcs = bk.backupSources(tmpRoot);
+  if (srcs.includes('data') && srcs.includes('cv.md') && !srcs.includes('reports')) {
+    pass('backupSources includes only existing paths');
+  } else fail(`backupSources → ${JSON.stringify(srcs)}`);
+
+  // listBackups filters by prefix and sorts newest-first.
+  const outDir = join(tmpRoot, 'backups');
+  mkdirSync(outDir, { recursive: true });
+  for (const n of ['career-ops-backup-2026-01-01-000000.tar.gz', 'career-ops-backup-2026-06-01-000000.tar.gz', 'unrelated.txt']) {
+    writeFileSync(join(outDir, n), 'x');
+  }
+  const list = bk.listBackups(outDir);
+  if (list.length === 2 && list[0].includes('2026-06-01')) pass('listBackups filters prefix + sorts newest first');
+  else fail(`listBackups → ${JSON.stringify(list)}`);
+
+  rmSync(tmpRoot, { recursive: true, force: true });
+} catch (e) {
+  fail(`backup tests crashed: ${e.message}`);
+}
+
 // ── SUMMARY ─────────────────────────────────────────────────────
 
 console.log('\n' + '='.repeat(50));
