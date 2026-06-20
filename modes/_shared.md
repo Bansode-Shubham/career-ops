@@ -116,11 +116,35 @@ After detecting archetype, read `modes/_profile.md` for the user's specific fram
 9. **Tracker additions as TSV** -- NEVER edit applications.md directly. Write TSV in `batch/tracker-additions/`.
 10. **Include `**URL:**` in every report header.**
 
+## Approval Gate (MANDATORY before any send/apply)
+
+A human must approve — and that approval must be **logged** — before anything is
+submitted or sent (application form, outreach DM, email, anything outward-facing).
+The sanctioned mechanism is `discord-gate.mjs` (reactions over REST, no daemon):
+
+1. **Post for approval:** `node discord-gate.mjs post {reportNum}` — posts the
+   evaluation summary (score, legitimacy, PDF, report #) to Discord and seeds
+   ✅ Approve · ✏️ Edit · ❌ Reject · ⏭️ Skip.
+2. **Read the decision:** `node discord-gate.mjs poll {reportNum}` — reads the
+   reaction and writes it back: ✅→`Applied`, ✏️→stays `Evaluated` (revise &
+   re-post), ❌→`Discarded`, ⏭️→`SKIP`. Every event is appended to
+   `data/approvals.md` (append-only audit log). Multiple reactions resolve
+   conservatively — any non-approve beats a stray ✅.
+3. **Only proceed on a logged ✅.** No Approve in `data/approvals.md` → do NOT
+   send. This does not replace the user's own final review; it records it.
+
+If the gate isn't configured (no `DISCORD_BOT_TOKEN`/`DISCORD_CHANNEL_ID` in
+`.env`), fall back to an explicit in-chat confirmation and still STOP before
+submitting — the gate is the preferred path, never a bypass of the ethical rule.
+LinkedIn stays read-only/manual regardless. `data/approvals.md` and
+`data/discord-gate.json` are User-Layer state — never hand-edit the audit log.
+
 ### Tools
 
 | Tool | Use |
 |------|-----|
 | WebSearch | Comp research, trends, company culture, LinkedIn contacts, fallback for JDs |
+| discord-gate.mjs | Approval gate — `post`/`poll`/`status`. Run before any send/apply. |
 | WebFetch | Fallback for extracting JDs from static pages |
 | Playwright | Verify offers (browser_navigate + browser_snapshot). **NEVER 2+ agents with Playwright in parallel.** |
 | Read | cv.md, _profile.md, article-digest.md, cv-template.html |

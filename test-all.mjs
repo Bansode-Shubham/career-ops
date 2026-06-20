@@ -4271,6 +4271,148 @@ try {
   fail(`hackernews provider tests crashed: ${e.message}`);
 }
 
+// ── 29. DISCORD APPROVAL GATE ───────────────────────────────────────
+
+console.log('\n29. Discord approval gate');
+
+try {
+  const gate = await import(pathToFileURL(join(ROOT, 'discord-gate.mjs')).href);
+
+  // normalizeEmoji strips the variation selector
+  if (gate.normalizeEmoji('✏️') === '✏' && gate.normalizeEmoji('✅') === '✅') {
+    pass('normalizeEmoji strips U+FE0F variation selectors');
+  } else fail('normalizeEmoji should strip U+FE0F');
+
+  // resolveDecisionFromReactions — approve when a human (count>seed) reacted
+  const approve = gate.resolveDecisionFromReactions([{ emoji: { name: '✅' }, count: 2, me: true }]);
+  if (approve && approve.action === 'approve' && approve.status === 'Applied') pass('resolveDecision: human ✅ → approve/Applied');
+  else fail(`resolveDecision approve → ${JSON.stringify(approve)}`);
+
+  // seed-only (bot's own reaction, count 1) → null
+  if (gate.resolveDecisionFromReactions([{ emoji: { name: '✅' }, count: 1, me: true }]) === null) {
+    pass('resolveDecision: seed-only reaction → null (no human decision)');
+  } else fail('resolveDecision should ignore seed-only reactions');
+
+  // conservative: ✅ + ❌ both human → reject wins (never auto-send on conflict)
+  const conflict = gate.resolveDecisionFromReactions([
+    { emoji: { name: '✅' }, count: 2, me: true },
+    { emoji: { name: '❌' }, count: 2, me: true },
+  ]);
+  if (conflict && conflict.action === 'reject') pass('resolveDecision: ✅+❌ conflict resolves conservatively to reject');
+  else fail(`resolveDecision conflict → ${JSON.stringify(conflict)}`);
+
+  // VS16 pencil matches edit
+  const edit = gate.resolveDecisionFromReactions([{ emoji: { name: '✏️' }, count: 3, me: false }]);
+  if (edit && edit.action === 'edit' && edit.status === 'Evaluated') pass('resolveDecision: ✏️ (with VS16) → edit/Evaluated');
+  else fail(`resolveDecision edit → ${JSON.stringify(edit)}`);
+
+  // non-array / empty
+  if (gate.resolveDecisionFromReactions(null) === null && gate.resolveDecisionFromReactions([]) === null) {
+    pass('resolveDecision handles null/empty reactions');
+  } else fail('resolveDecision should return null for null/empty');
+
+  // parseReportHeader — title split + **Key:** fields
+  const md = '# Evaluation: Acme — Senior AI Engineer\n\n**Date:** 2026-06-20\n**URL:** https://x.co/j\n**Score:** 4.3/5\n**Legitimacy:** High Confidence\n**PDF:** pending\n\n---\n';
+  const hdr = gate.parseReportHeader(md);
+  if (hdr.company === 'Acme' && hdr.role === 'Senior AI Engineer' && hdr.score === '4.3/5'
+      && hdr.url === 'https://x.co/j' && hdr.legitimacy === 'High Confidence') {
+    pass('parseReportHeader extracts company, role, and header fields');
+  } else fail(`parseReportHeader → ${JSON.stringify(hdr)}`);
+
+  // buildApprovalEmbed — title, color by score, empty fields filtered
+  const embed = gate.buildApprovalEmbed(hdr, 7);
+  const hasReport = embed.fields.some(f => f.name === 'Report' && f.value === '#7');
+  if (embed.title === 'Acme — Senior AI Engineer' && embed.url === 'https://x.co/j'
+      && embed.color === 0x3498db && hasReport) {
+    pass('buildApprovalEmbed builds title/url/color/fields');
+  } else fail(`buildApprovalEmbed → ${JSON.stringify({ title: embed.title, color: embed.color })}`);
+
+  // loadStates + validateStatus
+  const states = gate.loadStates();
+  if (gate.validateStatus('Applied', states) === 'Applied' && gate.validateStatus('aplicado', states) === 'Applied'
+      && gate.validateStatus('bogus', states) === null) {
+    pass('loadStates/validateStatus resolve canonical labels + aliases, reject unknown');
+  } else fail('validateStatus did not resolve states.yml correctly');
+
+  // updateTrackerStatus — in-place status update + note append
+  const tracker = [
+    '# Applications', '',
+    '| # | Date | Company | Role | Score | Status | PDF | Report | Notes |',
+    '|---|------|---------|------|-------|--------|-----|--------|-------|',
+    '| 1 | 2026-06-20 | Acme | AI Eng | 4.3/5 | Evaluated | ❌ | [1](reports/1-acme.md) | seed |',
+    '| 2 | 2026-06-20 | Beta | Backend | 3.9/5 | Evaluated | ❌ | [2](reports/2-beta.md) |  |',
+  ].join('\n');
+  const updated = gate.updateTrackerStatus(tracker, 1, 'Applied', 'gate approve');
+  const row1 = updated.split('\n').find(l => l.includes('Acme'));
+  const row2 = updated.split('\n').find(l => l.includes('Beta'));
+  if (row1.includes('| Applied |') && row1.includes('seed; gate approve') && row2.includes('| Evaluated |')) {
+    pass('updateTrackerStatus updates the matched row only, appends the note');
+  } else fail(`updateTrackerStatus → ${row1}`);
+
+  // updateTrackerStatus — throws on missing row
+  let missingThrew = false;
+  try { gate.updateTrackerStatus(tracker, 99, 'Applied'); } catch { missingThrew = true; }
+  if (missingThrew) pass('updateTrackerStatus throws when the report row is absent');
+  else fail('updateTrackerStatus should throw for a missing row');
+
+  // assertDiscordUrl — allowlist + https
+  let okHost = gate.assertDiscordUrl('https://discord.com/api/v10/x') === 'https://discord.com/api/v10/x';
+  let evilRejected = false, httpRejected = false;
+  try { gate.assertDiscordUrl('https://evil.example.com/api'); } catch { evilRejected = true; }
+  try { gate.assertDiscordUrl('http://discord.com/api'); } catch { httpRejected = true; }
+  if (okHost && evilRejected && httpRejected) pass('assertDiscordUrl allows discord.com https, rejects other hosts + http');
+  else fail(`assertDiscordUrl host/scheme checks: ok=${okHost} evil=${evilRejected} http=${httpRejected}`);
+
+  // createClient — requires token + channel
+  let noTok = false, noChan = false;
+  try { gate.createClient({ channelId: 'c' }); } catch { noTok = true; }
+  try { gate.createClient({ token: 't' }); } catch { noChan = true; }
+  if (noTok && noChan) pass('createClient requires both token and channelId');
+  else fail('createClient should require token + channelId');
+
+  // createClient — REST layer over an injected fetch (no network)
+  const calls = [];
+  const fakeFetch = async (url, opts) => {
+    calls.push({ url, method: opts.method, redirect: opts.redirect, auth: opts.headers.authorization, body: opts.body });
+    if (opts.method === 'POST') return { ok: true, status: 200, json: async () => ({ id: 'msg123' }) };
+    if (opts.method === 'PUT') return { ok: true, status: 204, json: async () => null };
+    return { ok: true, status: 200, json: async () => ({ id: 'msg123', reactions: [{ emoji: { name: '✅' }, count: 2, me: true }] }) };
+  };
+  const client = gate.createClient({ token: 'TOK', channelId: 'CHAN', fetchImpl: fakeFetch });
+  const posted = await client.postEmbed(gate.buildApprovalEmbed(hdr, 7));
+  await client.addReaction('msg123', '✅');
+  const msg = await client.getMessage('msg123');
+  const postCall = calls.find(c => c.method === 'POST');
+  const putCall = calls.find(c => c.method === 'PUT');
+  if (posted.id === 'msg123'
+      && postCall.url === 'https://discord.com/api/v10/channels/CHAN/messages'
+      && postCall.redirect === 'error' && postCall.auth === 'Bot TOK'
+      && JSON.parse(postCall.body).embeds.length === 1
+      && putCall.url.includes('/reactions/' + encodeURIComponent('✅') + '/@me')
+      && gate.resolveDecisionFromReactions(msg.reactions).action === 'approve') {
+    pass('createClient post/addReaction/getMessage hit the right endpoints with redirect:error + Bot auth');
+  } else fail(`createClient REST layer → ${JSON.stringify({ post: postCall?.url, put: putCall?.url })}`);
+
+  // createClient — non-OK response surfaces an error
+  let restErr = false;
+  const errClient = gate.createClient({ token: 'T', channelId: 'C', fetchImpl: async () => ({ ok: false, status: 403, text: async () => 'Forbidden' }) });
+  try { await errClient.getMessage('x'); } catch (e) { if (/HTTP 403/.test(e.message)) restErr = true; }
+  if (restErr) pass('createClient surfaces non-OK HTTP responses as errors');
+  else fail('createClient should throw on non-OK responses');
+
+  // appendAuditRow — creates header then appends rows (audit trail)
+  const auditTmp = join(mkdtempSync(join(tmpdir(), 'gate-audit-')), 'approvals.md');
+  gate.appendAuditRow(auditTmp, { timestamp: '2026-06-20T00:00:00Z', reportNum: 1, company: 'Acme', role: 'AI Eng', event: 'posted', decision: '—', status: 'pending', messageId: 'm1' });
+  gate.appendAuditRow(auditTmp, { timestamp: '2026-06-20T01:00:00Z', reportNum: 1, company: 'Acme', role: 'AI Eng', event: 'decision', decision: 'Approve', status: 'Applied', messageId: 'm1' });
+  const audit = readFileSync(auditTmp, 'utf-8');
+  if (audit.includes('# Approval Gate Log') && audit.includes('| posted |') && audit.includes('| decision |') && audit.includes('| Applied |')) {
+    pass('appendAuditRow writes the header once and appends event rows');
+  } else fail('appendAuditRow did not build the audit log correctly');
+
+} catch (e) {
+  fail(`discord gate tests crashed: ${e.message}`);
+}
+
 // ── SUMMARY ─────────────────────────────────────────────────────
 
 console.log('\n' + '='.repeat(50));
