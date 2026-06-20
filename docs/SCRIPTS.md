@@ -21,6 +21,8 @@ All scripts live in the project root as `.mjs` modules and are exposed via `npm 
 | `npm run liveness` | `check-liveness.mjs` | Test if job URLs are still active |
 | `npm run scan` | `scan.mjs` | Zero-token portal scanner |
 | `npm run scan:full` | `scan-ats-full.mjs` | Reverse ATS discovery scanner |
+| `node funding.mjs` | `funding.mjs` | Funding/hiring lead finder (SEC Form D, TechCrunch, YC) — suggest-only |
+| `npm run gate` | `discord-gate.mjs` | Discord approval gate (reactions + REST poll) |
 | `npm run validate:portals` | `validate-portals.mjs` | Validate portals.yml shape before scanning |
 | `npm run tracker` | `tracker.mjs` | SQLite derived index over applications.md — sync/query/history/export |
 
@@ -271,6 +273,42 @@ node scan-ats-full.mjs --md-out notes/scans    # also write a dated markdown dig
 ```
 
 **Exit codes:** `0` scan completed, `1` configuration error (no portals.yml, unknown `--ats` source) or fatal scan error.
+
+---
+
+## funding
+
+Funding/hiring **lead finder** for outreach. Pulls "this company just got money / is scaling" signals from public sources, dedups across them, screens out blocklisted employers (`config/profile.yml` → `blocklist`) and flags companies already in the tracker. **Suggest-only — it never contacts anyone.** Outreach drafted from these leads must go through the approval gate (`discord-gate.mjs`); see `modes/outreach.md`.
+
+Sources (pluggable, in `funding-sources/`, same SSRF hardening as `providers/` — host allowlist + `redirect:'error'`):
+- **`sec-formd`** — SEC EDGAR `getcurrent` Form D Atom feed (private capital raises). Filters out obvious fund/SPV filer names. SEC asks for a descriptive User-Agent: set `SEC_USER_AGENT="Your Name your@email"` in `.env` (a generic UA gets throttled).
+- **`techcrunch`** — TechCrunch Venture RSS, filtered to funding headlines, with company + `$amount` extraction.
+- **`yc`** — Y Combinator companies currently hiring, via the community [yc-oss](https://github.com/yc-oss/api) `hiring.json`. Supports `--batch` and `--min-team`.
+
+```bash
+node funding.mjs                          # all sources, human-readable
+node funding.mjs --json                   # machine-readable {leads, errors, sources}
+node funding.mjs --source=yc --min-team=10
+node funding.mjs --source=sec-formd,techcrunch --limit=20
+node funding.mjs --include-tracked        # also show companies already in the tracker
+```
+
+A source that fails (timeout, schema change) is reported under `errors` and does not abort the others.
+
+---
+
+## gate
+
+Discord **approval gate**. The hard rule: nothing is submitted or sent without a *logged* human approval, and this is that gate. Zero-infra — a bot token + a channel id + plain REST (reactions, no daemon, no public endpoint). Config in `.env`: `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID` (see `.env.example`).
+
+```bash
+node discord-gate.mjs post {reportNum}    # post the eval summary + seed ✅✏️❌⏭️
+node discord-gate.mjs post output/outreach-acme-2026-06-20.md   # outreach draft
+node discord-gate.mjs poll {reportNum|slug}   # read the reaction, write it back
+node discord-gate.mjs status              # list pending/resolved gate entries
+```
+
+`poll` maps reactions to canonical states (`templates/states.yml`): ✅→`Applied`, ✏️→`Evaluated` (revise & re-post), ❌→`Discarded`, ⏭️→`SKIP`. Conflicting reactions resolve conservatively (any non-approve beats a stray ✅); the bot's own seed reactions are ignored. Every event is appended to `data/approvals.md` (append-only audit log). Evaluations transition their tracker row in place; outreach drafts have no row and are logged-only. Both `data/approvals.md` and `data/discord-gate.json` are gitignored User-Layer state.
 
 ---
 
