@@ -1332,3 +1332,32 @@ job_boards:
     maxPages: 3
     enabled: false
     notes: "SEA job platform covering ID/SG/MY/VN. Undocumented public GraphQL API — adjust graphqlQuery if schema changes."
+
+  # ── Arbeitnow (EU / DE board, strong remote + visa-sponsorship coverage) ──
+  # Public board-wide feed, no auth. title_filter/location_filter still apply.
+  - name: Arbeitnow
+    provider: arbeitnow
+    maxPages: 2
+    enabled: false
+    notes: "European job board (DE-heavy) with lots of remote + visa-sponsor roles. Zero tokens."
+
+  # ── GitHub Issues job boards (issue-per-opening repos) ──
+  # Reads a repo's open Issues as postings via the public REST API (60 req/hr
+  # unauthenticated). Set `repo: owner/name` OR a github.com careers_url.
+  # `labels` narrows to the repo's job label(s).
+  - name: SimpleCTO Tech Jobs
+    provider: github
+    repo: "SimplifyJobs/New-Grad-Positions"
+    state: open
+    maxPages: 1
+    enabled: false
+    notes: "Example issue-based board. Swap repo/labels for any issue-per-job GitHub repo you follow."
+
+  # ── Hacker News 'Who is hiring?' (monthly thread, via Algolia API) ──
+  # Each top-level comment is a posting. Omit storyId to auto-find the latest
+  # thread; set it (or a news.ycombinator.com/item?id= careers_url) to pin one.
+  - name: HN Who is Hiring
+    provider: hackernews
+    maxPages: 3
+    enabled: false
+    notes: "Monthly 'Ask HN: Who is hiring?' thread. Many remote/startup roles; full comment text is filtered via content_filter. Zero tokens."

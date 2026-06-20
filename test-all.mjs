@@ -3962,6 +3962,315 @@ try {
   fail(`ibm provider tests crashed: ${e.message}`);
 }
 
+// ── 26. PROVIDERS — Arbeitnow ───────────────────────────────────────
+
+console.log('\n26. Provider — arbeitnow');
+
+try {
+  const arbeitnow = (await import(pathToFileURL(join(ROOT, 'providers/arbeitnow.mjs')).href)).default;
+  const { parseArbeitnowItem } = await import(pathToFileURL(join(ROOT, 'providers/arbeitnow.mjs')).href);
+
+  if (arbeitnow.id === 'arbeitnow') pass('arbeitnow.id is "arbeitnow"');
+  else fail(`arbeitnow.id is ${JSON.stringify(arbeitnow.id)}`);
+
+  if (arbeitnow.detect({ name: 'X', careers_url: 'https://www.arbeitnow.com/jobs' }) === null) {
+    pass('arbeitnow.detect() returns null — explicit provider only');
+  } else {
+    fail('arbeitnow.detect() should return null');
+  }
+
+  // parse — valid item (created_at is unix seconds; remote flag annotates location)
+  const item = {
+    slug: 'ml-engineer-berlin-123',
+    company_name: 'DeepCorp',
+    title: 'Machine Learning Engineer',
+    description: 'Build ML systems.',
+    remote: true,
+    url: 'https://www.arbeitnow.com/view/ml-engineer-berlin-123',
+    location: 'Berlin',
+    created_at: 1718841600,
+  };
+  const p = parseArbeitnowItem(item, 'Fallback');
+  if (p && p.title === 'Machine Learning Engineer' && p.company === 'DeepCorp'
+      && p.url === 'https://www.arbeitnow.com/view/ml-engineer-berlin-123'
+      && p.location === 'Berlin (Remote)' && p.description === 'Build ML systems.'
+      && p.postedAt === 1718841600000) {
+    pass('parseArbeitnowItem extracts fields, annotates remote, converts created_at to ms');
+  } else {
+    fail(`parseArbeitnowItem returned ${JSON.stringify(p)}`);
+  }
+
+  if (parseArbeitnowItem({ company_name: 'X', url: 'https://www.arbeitnow.com/view/1' }, 'F') === null) {
+    pass('parseArbeitnowItem returns null without a title');
+  } else fail('parseArbeitnowItem should reject title-less items');
+
+  if (parseArbeitnowItem({ title: 'Role', url: 'ftp://bad' }, 'F') === null) {
+    pass('parseArbeitnowItem rejects non-http urls');
+  } else fail('parseArbeitnowItem should reject non-http urls');
+
+  if (parseArbeitnowItem(null, 'F') === null && parseArbeitnowItem(5, 'F') === null) {
+    pass('parseArbeitnowItem handles null/non-object safely');
+  } else fail('parseArbeitnowItem should return null for null/non-object');
+
+  // fetch — happy path + cursor pagination
+  let anCalls = 0;
+  const anCtx = {
+    transport: 'http',
+    fetchJson: async (url, opts) => {
+      if (opts?.redirect !== 'error') throw new Error('expected redirect:error');
+      anCalls++;
+      if (anCalls === 1) {
+        return {
+          data: [{ title: 'AI Engineer', company_name: 'Acme', url: 'https://www.arbeitnow.com/view/a', location: 'Munich', created_at: 1718841600 }],
+          links: { next: 'https://www.arbeitnow.com/api/job-board-api?page=2' },
+        };
+      }
+      return { data: [{ title: 'Data Engineer', company_name: 'Beta', url: 'https://www.arbeitnow.com/view/b' }], links: { next: null } };
+    },
+    fetchText: async () => { throw new Error('should not be called'); },
+  };
+  const anJobs = await arbeitnow.fetch({ name: 'Arbeitnow', provider: 'arbeitnow', maxPages: 2 }, anCtx);
+  if (anJobs.length === 2 && anJobs[0].title === 'AI Engineer' && anJobs[1].title === 'Data Engineer') {
+    pass('arbeitnow.fetch() follows links.next across pages');
+  } else fail(`arbeitnow.fetch() returned ${JSON.stringify(anJobs)}`);
+
+  // fetch — rejects an off-allowlist cursor (SSRF guard on links.next)
+  let anHostRejected = false;
+  const anEvilCtx = {
+    transport: 'http',
+    fetchJson: async () => ({ data: [], links: { next: 'https://evil.example.com/api' } }),
+    fetchText: async () => '',
+  };
+  try {
+    await arbeitnow.fetch({ name: 'X', provider: 'arbeitnow', maxPages: 2 }, anEvilCtx);
+  } catch (e) {
+    if (e.message.includes('untrusted hostname')) anHostRejected = true;
+  }
+  // page 1 is the canonical FEED_URL (allowed); page 2 cursor points off-host → reject
+  if (anHostRejected) pass('arbeitnow.fetch() rejects an off-allowlist links.next cursor');
+  else fail('arbeitnow.fetch() should reject off-allowlist cursors');
+
+  // fetch — malformed top-level payload throws on page 1
+  let anBadThrew = false;
+  try {
+    await arbeitnow.fetch({ name: 'X', provider: 'arbeitnow' }, {
+      transport: 'http', fetchJson: async () => ({ nope: true }), fetchText: async () => '',
+    });
+  } catch { anBadThrew = true; }
+  if (anBadThrew) pass('arbeitnow.fetch() throws on a malformed page-1 payload');
+  else fail('arbeitnow.fetch() should throw on malformed page-1 payload');
+
+} catch (e) {
+  fail(`arbeitnow provider tests crashed: ${e.message}`);
+}
+
+// ── 27. PROVIDERS — GitHub Issues ───────────────────────────────────
+
+console.log('\n27. Provider — github');
+
+try {
+  const github = (await import(pathToFileURL(join(ROOT, 'providers/github.mjs')).href)).default;
+  const { parseGithubIssue, resolveRepo } = await import(pathToFileURL(join(ROOT, 'providers/github.mjs')).href);
+
+  if (github.id === 'github') pass('github.id is "github"');
+  else fail(`github.id is ${JSON.stringify(github.id)}`);
+
+  // resolveRepo — explicit slug
+  const r1 = resolveRepo({ repo: 'acme/jobs' });
+  if (r1 && r1.owner === 'acme' && r1.repo === 'jobs') pass('resolveRepo parses explicit owner/repo slug');
+  else fail(`resolveRepo(slug) → ${JSON.stringify(r1)}`);
+
+  // resolveRepo — from careers_url
+  const r2 = resolveRepo({ careers_url: 'https://github.com/acme/jobs/issues' });
+  if (r2 && r2.owner === 'acme' && r2.repo === 'jobs') pass('resolveRepo derives repo from github.com careers_url');
+  else fail(`resolveRepo(url) → ${JSON.stringify(r2)}`);
+
+  // resolveRepo — off-host careers_url → null
+  if (resolveRepo({ careers_url: 'https://gitlab.com/acme/jobs' }) === null) {
+    pass('resolveRepo rejects non-github careers_url');
+  } else fail('resolveRepo should reject non-github careers_url');
+
+  // detect — auto-derives issues API URL from a github.com careers_url
+  const det = github.detect({ name: 'X', careers_url: 'https://github.com/acme/jobs' });
+  if (det && det.url.startsWith('https://api.github.com/repos/acme/jobs/issues')) {
+    pass('github.detect() derives the issues API URL');
+  } else fail(`github.detect() → ${JSON.stringify(det)}`);
+
+  // detect — null when no repo derivable
+  if (github.detect({ name: 'X', careers_url: 'https://example.com' }) === null) {
+    pass('github.detect() returns null when no repo is derivable');
+  } else fail('github.detect() should return null for non-github url');
+
+  // parseGithubIssue — valid issue with a location label
+  const issue = {
+    title: 'Senior AI Engineer (Remote)',
+    html_url: 'https://github.com/acme/jobs/issues/42',
+    body: 'We are hiring.',
+    created_at: '2026-06-01T00:00:00Z',
+    labels: [{ name: 'job' }, { name: 'Remote - EU' }],
+  };
+  const gi = parseGithubIssue(issue, 'Acme');
+  if (gi && gi.title === 'Senior AI Engineer (Remote)' && gi.url === 'https://github.com/acme/jobs/issues/42'
+      && gi.company === 'Acme' && gi.location === 'Remote - EU' && gi.description === 'We are hiring.'
+      && gi.postedAt === Date.parse('2026-06-01T00:00:00Z')) {
+    pass('parseGithubIssue extracts title, url, location label, body, postedAt');
+  } else fail(`parseGithubIssue → ${JSON.stringify(gi)}`);
+
+  // parseGithubIssue — rejects pull requests
+  if (parseGithubIssue({ title: 'PR', html_url: 'https://github.com/a/b/pull/1', pull_request: {} }, 'Co') === null) {
+    pass('parseGithubIssue rejects pull requests');
+  } else fail('parseGithubIssue should reject PRs');
+
+  // parseGithubIssue — rejects off-host html_url
+  if (parseGithubIssue({ title: 'Role', html_url: 'https://evil.example.com/x' }, 'Co') === null) {
+    pass('parseGithubIssue rejects off-host html_url');
+  } else fail('parseGithubIssue should reject off-host html_url');
+
+  // parseGithubIssue — null/title-less safety
+  if (parseGithubIssue(null, 'Co') === null && parseGithubIssue({ html_url: 'https://github.com/a/b/issues/1' }, 'Co') === null) {
+    pass('parseGithubIssue handles null and title-less issues');
+  } else fail('parseGithubIssue should return null for null/title-less');
+
+  // fetch — happy path, skips PRs, pins Accept header
+  let ghAccept = '';
+  const ghCtx = {
+    transport: 'http',
+    fetchJson: async (url, opts) => {
+      if (!url.startsWith('https://api.github.com/repos/acme/jobs/issues')) throw new Error('unexpected url');
+      if (opts?.redirect !== 'error') throw new Error('expected redirect:error');
+      ghAccept = opts?.headers?.accept || '';
+      return [
+        { title: 'AI Engineer', html_url: 'https://github.com/acme/jobs/issues/1', created_at: '2026-01-01T00:00:00Z', labels: [] },
+        { title: 'A PR', html_url: 'https://github.com/acme/jobs/pull/2', pull_request: {} },
+      ];
+    },
+    fetchText: async () => { throw new Error('should not be called'); },
+  };
+  const ghJobs = await github.fetch({ name: 'Acme', provider: 'github', repo: 'acme/jobs' }, ghCtx);
+  if (ghJobs.length === 1 && ghJobs[0].title === 'AI Engineer' && ghAccept === 'application/vnd.github+json') {
+    pass('github.fetch() returns issues, skips PRs, sends the v3 Accept header');
+  } else fail(`github.fetch() → ${JSON.stringify(ghJobs)}, accept="${ghAccept}"`);
+
+  // fetch — missing repo throws
+  let ghNoRepo = false;
+  try {
+    await github.fetch({ name: 'X', provider: 'github' }, { transport: 'http', fetchJson: async () => [], fetchText: async () => '' });
+  } catch (e) { if (/cannot derive owner\/repo/.test(e.message)) ghNoRepo = true; }
+  if (ghNoRepo) pass('github.fetch() throws when no repo can be derived');
+  else fail('github.fetch() should throw without a repo');
+
+} catch (e) {
+  fail(`github provider tests crashed: ${e.message}`);
+}
+
+// ── 28. PROVIDERS — Hacker News (Who is hiring) ─────────────────────
+
+console.log('\n28. Provider — hackernews');
+
+try {
+  const hackernews = (await import(pathToFileURL(join(ROOT, 'providers/hackernews.mjs')).href)).default;
+  const { parseHnComment, stripHtml, pickHiringStory } = await import(pathToFileURL(join(ROOT, 'providers/hackernews.mjs')).href);
+
+  if (hackernews.id === 'hackernews') pass('hackernews.id is "hackernews"');
+  else fail(`hackernews.id is ${JSON.stringify(hackernews.id)}`);
+
+  if (hackernews.detect({ name: 'X' }) === null) pass('hackernews.detect() returns null — explicit provider only');
+  else fail('hackernews.detect() should return null');
+
+  // stripHtml — tags removed, <p> → newline, entities decoded, <a> unwrapped
+  const stripped = stripHtml('Acme &#x2F; Senior Eng<p>Remote &amp; <a href="https://x.com">apply</a> &lt;here&gt;');
+  if (stripped === 'Acme / Senior Eng\nRemote & apply <here>') {
+    pass('stripHtml decodes entities, unwraps links, converts <p> to newlines');
+  } else fail(`stripHtml → ${JSON.stringify(stripped)}`);
+
+  // pickHiringStory — picks the hiring thread, skips "wants to be hired" / freelancer
+  const stories = { hits: [
+    { objectID: '999', title: 'Ask HN: Freelancer? Seeking Freelancer? (June 2026)' },
+    { objectID: '111', title: 'Ask HN: Who is hiring? (June 2026)' },
+    { objectID: '222', title: 'Ask HN: Who wants to be hired? (June 2026)' },
+  ] };
+  if (pickHiringStory(stories) === '111') pass('pickHiringStory selects the "Who is hiring?" thread only');
+  else fail(`pickHiringStory → ${pickHiringStory(stories)}`);
+
+  if (pickHiringStory({ hits: [] }) === null) pass('pickHiringStory returns null when no thread matches');
+  else fail('pickHiringStory should return null on no match');
+
+  // parseHnComment — top-level posting parsed; company/location from the pipe line
+  const hit = {
+    objectID: '555',
+    parent_id: 111,
+    author: 'someuser',
+    created_at_i: 1718841600,
+    comment_text: 'CoolStartup | Senior AI Engineer | Berlin, REMOTE (EU)<p>We build agents. &#x2F;yc',
+  };
+  const hc = parseHnComment(hit, '111');
+  if (hc && hc.company === 'CoolStartup' && hc.location === 'Berlin, REMOTE (EU)'
+      && hc.url === 'https://news.ycombinator.com/item?id=555'
+      && hc.title === 'CoolStartup | Senior AI Engineer | Berlin, REMOTE (EU)'
+      && hc.description.includes('We build agents. /yc') && hc.postedAt === 1718841600000) {
+    pass('parseHnComment parses a top-level posting (company, location, url, description, postedAt)');
+  } else fail(`parseHnComment → ${JSON.stringify(hc)}`);
+
+  // parseHnComment — rejects replies (parent_id !== storyId)
+  if (parseHnComment({ objectID: '9', parent_id: 555, comment_text: 'reply' }, '111') === null) {
+    pass('parseHnComment rejects replies (non-top-level comments)');
+  } else fail('parseHnComment should reject replies');
+
+  // parseHnComment — null/empty safety
+  if (parseHnComment(null, '111') === null
+      && parseHnComment({ objectID: '1', parent_id: 111, comment_text: '<p>  </p>' }, '111') === null) {
+    pass('parseHnComment handles null and empty-text comments');
+  } else fail('parseHnComment should return null for null/empty');
+
+  // fetch — auto-find story, then read comments paginated; SSRF guard checked
+  let hnUrls = [];
+  const hnCtx = {
+    transport: 'http',
+    fetchJson: async (url, opts) => {
+      if (opts?.redirect !== 'error') throw new Error('expected redirect:error');
+      if (new URL(url).hostname !== 'hn.algolia.com') throw new Error('off-host');
+      hnUrls.push(url);
+      if (url.includes('author_whoishiring')) {
+        return { hits: [{ objectID: '111', title: 'Ask HN: Who is hiring? (June 2026)' }] };
+      }
+      // comment page
+      return {
+        nbPages: 1,
+        hits: [
+          { objectID: '555', parent_id: 111, created_at_i: 1718841600, comment_text: 'Acme | AI Engineer | Remote<p>join us' },
+          { objectID: '556', parent_id: 999, comment_text: 'a reply' },
+        ],
+      };
+    },
+    fetchText: async () => { throw new Error('should not be called'); },
+  };
+  const hnJobs = await hackernews.fetch({ name: 'HN', provider: 'hackernews' }, hnCtx);
+  if (hnJobs.length === 1 && hnJobs[0].company === 'Acme'
+      && hnUrls.some(u => u.includes('author_whoishiring'))
+      && hnUrls.some(u => u.includes('story_111'))) {
+    pass('hackernews.fetch() auto-finds the thread and reads its top-level comments');
+  } else fail(`hackernews.fetch() → ${JSON.stringify(hnJobs)}, urls=${JSON.stringify(hnUrls)}`);
+
+  // fetch — explicit storyId skips the story-search call
+  let usedStorySearch = false;
+  const hnPinnedCtx = {
+    transport: 'http',
+    fetchJson: async (url, opts) => {
+      if (opts?.redirect !== 'error') throw new Error('expected redirect:error');
+      if (url.includes('author_whoishiring')) usedStorySearch = true;
+      return { nbPages: 1, hits: [{ objectID: '777', parent_id: 222, created_at_i: 1718841600, comment_text: 'Beta | Backend | Remote<p>x' }] };
+    },
+    fetchText: async () => '',
+  };
+  const hnPinned = await hackernews.fetch({ name: 'HN', provider: 'hackernews', storyId: 222 }, hnPinnedCtx);
+  if (hnPinned.length === 1 && hnPinned[0].company === 'Beta' && !usedStorySearch) {
+    pass('hackernews.fetch() with explicit storyId skips the thread search');
+  } else fail(`hackernews.fetch(storyId) → ${JSON.stringify(hnPinned)}, usedSearch=${usedStorySearch}`);
+
+} catch (e) {
+  fail(`hackernews provider tests crashed: ${e.message}`);
+}
+
 // ── SUMMARY ─────────────────────────────────────────────────────
 
 console.log('\n' + '='.repeat(50));
