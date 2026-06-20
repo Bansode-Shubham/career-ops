@@ -4585,6 +4585,42 @@ try {
   fail(`blocklist + cooldown tests crashed: ${e.message}`);
 }
 
+// ── 32. KILL-SWITCH (pause sending + outreach) ──────────────────────
+console.log('\n32. Kill-switch');
+try {
+  const ks = await import(pathToFileURL(join(ROOT, '_killswitch.mjs')).href);
+  const priorEnv = process.env.CAREER_OPS_PAUSED;
+  const priorFileExisted = existsSync(ks.PAUSE_FILE);
+  const priorFile = priorFileExisted ? readFileSync(ks.PAUSE_FILE, 'utf-8') : null;
+
+  // Clean slate, then env override.
+  delete process.env.CAREER_OPS_PAUSED;
+  if (priorFileExisted) rmSync(ks.PAUSE_FILE, { force: true });
+  process.env.CAREER_OPS_PAUSED = '1';
+  const onEnv = ks.isPaused();
+  if (onEnv.paused && onEnv.source === 'env') pass('isPaused honors the CAREER_OPS_PAUSED env override');
+  else fail(`env pause → ${JSON.stringify(onEnv)}`);
+  delete process.env.CAREER_OPS_PAUSED;
+
+  // Sentinel file roundtrip.
+  ks.pause('test reason');
+  const onFile = ks.isPaused();
+  if (onFile.paused && onFile.source === 'file' && onFile.reason === 'test reason') {
+    pass('pause() writes the sentinel; isPaused reports source + reason');
+  } else fail(`file pause → ${JSON.stringify(onFile)}`);
+
+  ks.resume();
+  const off = ks.isPaused();
+  if (!off.paused) pass('resume() clears the sentinel (back to active)');
+  else fail(`resume left paused → ${JSON.stringify(off)}`);
+
+  // Restore whatever state existed before the test.
+  if (priorFileExisted) writeFileSync(ks.PAUSE_FILE, priorFile);
+  if (priorEnv !== undefined) process.env.CAREER_OPS_PAUSED = priorEnv;
+} catch (e) {
+  fail(`kill-switch tests crashed: ${e.message}`);
+}
+
 // ── SUMMARY ─────────────────────────────────────────────────────
 
 console.log('\n' + '='.repeat(50));

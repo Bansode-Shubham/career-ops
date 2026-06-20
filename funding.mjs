@@ -30,6 +30,7 @@ import {
   loadBlocklistConfig,
   loadRecentCompanies,
 } from './_blocklist.mjs';
+import { isPaused } from './_killswitch.mjs';
 
 // Re-exported so existing importers/tests keep resolving funding.normalizeCompany.
 export { normalizeCompany };
@@ -133,6 +134,17 @@ function parseArgs(argv) {
 
 async function main() {
   const flags = parseArgs(process.argv.slice(2));
+
+  // Kill-switch: lead-finding is the front of the outreach path, which the
+  // pause is meant to stop. Refuse while paused (scanning lives in scan.mjs).
+  const ks = isPaused();
+  if (ks.paused) {
+    const msg = { paused: true, reason: `killswitch (${ks.source}: ${ks.reason})`, leads: [] };
+    if (flags.json) console.log(JSON.stringify(msg));
+    else console.error(`⏸  Outreach paused via ${ks.source} (${ks.reason}) — not finding leads. Resume with: node killswitch.mjs off`);
+    process.exit(0);
+  }
+
   const sources = await loadSources();
   if (sources.size === 0) {
     const msg = { error: 'no funding sources loaded from funding-sources/' };

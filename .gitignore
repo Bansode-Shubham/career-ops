@@ -6,6 +6,7 @@ data/pipeline.md
 data/scan-history.tsv
 data/approvals.md
 data/discord-gate.json
+data/.paused
 data/parser-output/**/*.json
 !data/parser-output/.gitkeep
 !data/parser-output/**/.gitkeep

@@ -27,6 +27,7 @@ import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { randomUUID } from 'crypto';
 import yaml from 'js-yaml';
+import { isPaused } from './_killswitch.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATES_PATH = join(ROOT, 'templates/states.yml');
@@ -439,12 +440,22 @@ async function cmdPoll(arg, { json, client, states }) {
 
   const resolved = [];
   const pending = [];
+  const blocked = [];
   const trackerPath = resolveTrackerPath();
+  const ks = isPaused();
 
   for (const entry of targets) {
     const message = await client.getMessage(entry.messageId);
     const decision = resolveDecisionFromReactions(message.reactions || []);
     if (!decision) { pending.push(keyOf(entry)); continue; }
+
+    // Kill-switch: an approval greenlights a send. While paused, leave approves
+    // unresolved (still pending) so nothing goes out; rejects/skips/edits — not
+    // sends — still resolve normally.
+    if (ks.paused && decision.action === 'approve') {
+      blocked.push(keyOf(entry));
+      continue;
+    }
 
     const canonical = validateStatus(decision.status, states);
     if (!canonical) throw new Error(`poll: "${decision.status}" is not a canonical state in states.yml`);
@@ -479,12 +490,13 @@ async function cmdPoll(arg, { json, client, states }) {
 
   writeState(state);
 
-  const out = { command: 'poll', resolved, pending };
+  const out = { command: 'poll', resolved, pending, blocked };
   if (json) console.log(JSON.stringify(out));
   else {
     for (const r of resolved) console.log(`✅ ${r.id} → ${r.decision} (${r.status})${r.trackerWritten ? ' [tracker updated]' : ''}`);
+    if (blocked.length) console.log(`⏸  Approve held (killswitch ${ks.source ? `via ${ks.source}` : 'on'}): ${blocked.join(', ')} — resume with: node killswitch.mjs off`);
     if (pending.length) console.log(`⏳ Still pending: ${pending.join(', ')}`);
-    if (!resolved.length && pending.length) console.log('No decisions yet — react in Discord and poll again.');
+    if (!resolved.length && !blocked.length && pending.length) console.log('No decisions yet — react in Discord and poll again.');
   }
   return out;
 }
@@ -525,6 +537,19 @@ async function main() {
 
   try {
     if (command === 'status') return void cmdStatus({ json });
+
+    // Kill-switch: posting a card is the entry point of the send pipeline.
+    // Block it before we even need a Discord client — nothing can be greenlit
+    // while paused. (poll holds approve-resolutions separately, in cmdPoll.)
+    if (command === 'post') {
+      const ks = isPaused();
+      if (ks.paused) {
+        const out = { command: 'post', status: 'blocked', reason: `killswitch (${ks.source}: ${ks.reason})` };
+        if (json) console.log(JSON.stringify(out));
+        else console.error(`⏸  Gate paused via ${ks.source} (${ks.reason}) — not posting. Resume with: node killswitch.mjs off`);
+        return;
+      }
+    }
 
     const states = loadStates();
     const client = createClient({ token, channelId, apiBase });
