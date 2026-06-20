@@ -122,7 +122,7 @@ export function validateStatus(status, states) {
  */
 export function parseReportHeader(markdown) {
   const text = String(markdown || '');
-  const titleMatch = text.match(/^#\s*(?:Evaluation|Evaluación):\s*(.+?)\s*$/m);
+  const titleMatch = text.match(/^#\s*(?:Evaluation|Evaluación|Outreach):\s*(.+?)\s*$/m);
   let company = '', role = '';
   if (titleMatch) {
     // Split on the first em/en dash or hyphen-with-spaces separating company — role.
@@ -379,18 +379,27 @@ export function createClient({ token, channelId, apiBase = DEFAULT_API_BASE, fet
 
 async function cmdPost(arg, { json, client, channelId }) {
   const reportPath = resolveReportPath(arg);
-  if (!reportPath) throw new Error(`post: report not found for "${arg}" (expected reports/{num}-*.md or a path)`);
-  const reportNum = reportNumFromPath(reportPath);
+  if (!reportPath) throw new Error(`post: file not found for "${arg}" (expected reports/{num}-*.md or a path)`);
   const header = parseReportHeader(readFileSync(reportPath, 'utf-8'));
 
-  const embed = buildApprovalEmbed(header, reportNum);
+  // Evaluations carry a numeric report id and write back to the tracker;
+  // outreach drafts (no numeric prefix) are keyed by filename slug and only
+  // logged — there is no tracker row to transition.
+  const reportNum = reportNumFromPath(reportPath);
+  const kind = reportNum != null ? 'evaluation' : 'outreach';
+  const id = reportNum != null ? String(reportNum) : basename(reportPath).replace(/\.md$/, '');
+  const ref = reportNum != null ? reportNum : id;
+
+  const embed = buildApprovalEmbed(header, ref);
   const message = await client.postEmbed(embed);
   for (const emoji of SEED_EMOJI) {
     await client.addReaction(message.id, emoji);
   }
 
   const state = readState();
-  state.entries[String(reportNum)] = {
+  state.entries[id] = {
+    id,
+    kind,
     reportNum,
     reportPath: reportPath.replace(`${ROOT}/`, ''),
     company: header.company,
@@ -405,21 +414,22 @@ async function cmdPost(arg, { json, client, channelId }) {
 
   appendAuditRow(AUDIT_LOG, {
     timestamp: new Date().toISOString(),
-    reportNum, company: header.company, role: header.role,
-    event: 'posted', decision: '—', status: 'pending', messageId: message.id,
+    reportNum: ref, company: header.company, role: header.role,
+    event: `posted (${kind})`, decision: '—', status: 'pending', messageId: message.id,
   });
 
-  const result = { command: 'post', reportNum, company: header.company, role: header.role, messageId: message.id, status: 'pending' };
+  const result = { command: 'post', id, kind, reportNum, company: header.company, role: header.role, messageId: message.id, status: 'pending' };
   if (json) console.log(JSON.stringify(result));
-  else console.log(`📨 Posted approval request for #${reportNum} ${header.company} — ${header.role} (message ${message.id}). React in Discord, then run: node discord-gate.mjs poll ${reportNum}`);
+  else console.log(`📨 Posted ${kind} approval for ${ref} — ${header.company}${header.role ? ` (${header.role})` : ''} (message ${message.id}). React in Discord, then: node discord-gate.mjs poll ${id}`);
   return result;
 }
 
 async function cmdPoll(arg, { json, client, states }) {
   const state = readState();
   const all = arg === '--all' || !arg;
+  const keyOf = (e) => e.id || String(e.reportNum);
   const targets = Object.values(state.entries).filter(e =>
-    e.status === 'pending' && (all || String(e.reportNum) === String(arg)));
+    e.status === 'pending' && (all || String(keyOf(e)) === String(arg) || String(e.reportNum) === String(arg)));
 
   if (targets.length === 0) {
     const out = { command: 'poll', resolved: [], pending: [], message: 'no pending entries matched' };
@@ -434,31 +444,37 @@ async function cmdPoll(arg, { json, client, states }) {
   for (const entry of targets) {
     const message = await client.getMessage(entry.messageId);
     const decision = resolveDecisionFromReactions(message.reactions || []);
-    if (!decision) { pending.push(entry.reportNum); continue; }
+    if (!decision) { pending.push(keyOf(entry)); continue; }
 
     const canonical = validateStatus(decision.status, states);
     if (!canonical) throw new Error(`poll: "${decision.status}" is not a canonical state in states.yml`);
 
-    // Write the decision back to the tracker (in-place status update).
-    if (existsSync(trackerPath)) {
-      const note = `gate ${decision.action} ${new Date().toISOString().slice(0, 10)}`;
-      const updated = updateTrackerStatus(readFileSync(trackerPath, 'utf-8'), entry.reportNum, canonical, note);
-      writeFileAtomic(trackerPath, updated);
+    // Evaluations transition their tracker row in place. Outreach items (no
+    // reportNum) and not-yet-merged evaluations have no row — that is fine; the
+    // logged decision in data/approvals.md is the authoritative record.
+    let trackerWritten = false;
+    if (entry.reportNum != null && existsSync(trackerPath)) {
+      try {
+        const note = `gate ${decision.action} ${new Date().toISOString().slice(0, 10)}`;
+        const updated = updateTrackerStatus(readFileSync(trackerPath, 'utf-8'), entry.reportNum, canonical, note);
+        writeFileAtomic(trackerPath, updated);
+        trackerWritten = true;
+      } catch { /* no matching row yet — decision still logged below */ }
     }
 
     entry.status = 'resolved';
     entry.decision = decision.action;
     entry.resolvedStatus = canonical;
     entry.resolvedAt = new Date().toISOString();
-    state.entries[String(entry.reportNum)] = entry;
+    state.entries[keyOf(entry)] = entry;
 
     appendAuditRow(AUDIT_LOG, {
       timestamp: entry.resolvedAt,
-      reportNum: entry.reportNum, company: entry.company, role: entry.role,
-      event: 'decision', decision: decision.label, status: canonical, messageId: entry.messageId,
+      reportNum: keyOf(entry), company: entry.company, role: entry.role,
+      event: `decision (${entry.kind || 'evaluation'})`, decision: decision.label, status: canonical, messageId: entry.messageId,
     });
 
-    resolved.push({ reportNum: entry.reportNum, decision: decision.action, status: canonical });
+    resolved.push({ id: keyOf(entry), decision: decision.action, status: canonical, trackerWritten });
   }
 
   writeState(state);
@@ -466,7 +482,7 @@ async function cmdPoll(arg, { json, client, states }) {
   const out = { command: 'poll', resolved, pending };
   if (json) console.log(JSON.stringify(out));
   else {
-    for (const r of resolved) console.log(`✅ #${r.reportNum} → ${r.decision} (${r.status})`);
+    for (const r of resolved) console.log(`✅ ${r.id} → ${r.decision} (${r.status})${r.trackerWritten ? ' [tracker updated]' : ''}`);
     if (pending.length) console.log(`⏳ Still pending: ${pending.join(', ')}`);
     if (!resolved.length && pending.length) console.log('No decisions yet — react in Discord and poll again.');
   }
@@ -478,9 +494,10 @@ function cmdStatus({ json }) {
   const entries = Object.values(state.entries);
   if (json) { console.log(JSON.stringify({ command: 'status', entries })); return; }
   if (!entries.length) { console.log('No gate entries yet.'); return; }
-  console.log('Report  Status     Decision   Company — Role');
-  for (const e of entries.sort((a, b) => a.reportNum - b.reportNum)) {
-    console.log(`#${String(e.reportNum).padEnd(5)} ${String(e.status).padEnd(10)} ${String(e.decision || '—').padEnd(10)} ${e.company} — ${e.role}`);
+  console.log('Ref            Status     Decision   Company — Role');
+  const refOf = (e) => e.id || String(e.reportNum);
+  for (const e of entries.sort((a, b) => refOf(a).localeCompare(refOf(b), undefined, { numeric: true }))) {
+    console.log(`${refOf(e).padEnd(14)} ${String(e.status).padEnd(10)} ${String(e.decision || '—').padEnd(10)} ${e.company}${e.role ? ` — ${e.role}` : ''}`);
   }
 }
 

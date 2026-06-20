@@ -4413,6 +4413,130 @@ try {
   fail(`discord gate tests crashed: ${e.message}`);
 }
 
+// ── 30. FUNDING LEADS (sources + orchestrator) ──────────────────────
+
+console.log('\n30. Funding leads');
+
+try {
+  const feed = await import(pathToFileURL(join(ROOT, 'funding-sources/_feed.mjs')).href);
+
+  // _feed: RSS parse
+  const rss = '<rss><channel><item><title>Acme raises $5M</title><link>https://tc.com/a</link><pubDate>Mon, 01 Jun 2026</pubDate><description>desc</description></item></channel></rss>';
+  const rssItems = feed.parseFeed(rss);
+  if (rssItems.length === 1 && rssItems[0].title === 'Acme raises $5M' && rssItems[0].link === 'https://tc.com/a') {
+    pass('parseFeed reads RSS <item> title/link');
+  } else fail(`parseFeed RSS → ${JSON.stringify(rssItems)}`);
+
+  // _feed: Atom parse with link href + entity decode
+  const atom = '<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>D - Beta &amp; Co (123) (Filer)</title><link rel="alternate" href="https://sec.gov/x"/><summary>Filed: 2026-06-18</summary></entry></feed>';
+  const atomItems = feed.parseFeed(atom);
+  if (atomItems.length === 1 && atomItems[0].title === 'D - Beta & Co (123) (Filer)' && atomItems[0].link === 'https://sec.gov/x') {
+    pass('parseFeed reads Atom <entry> with link href + entity decode');
+  } else fail(`parseFeed Atom → ${JSON.stringify(atomItems)}`);
+
+  if (feed.decodeXmlEntities('a &amp; b &#x2F; c &lt;d&gt;') === 'a & b / c <d>') pass('decodeXmlEntities decodes named + numeric entities');
+  else fail('decodeXmlEntities failed');
+
+  // ── sec-formd ──
+  const sec = (await import(pathToFileURL(join(ROOT, 'funding-sources/sec-formd.mjs')).href));
+  const secP = sec.default;
+  if (sec.companyFromTitle('D - Acme Robotics, Inc. (0001234567) (Filer)') === 'Acme Robotics, Inc.') pass('sec companyFromTitle strips form + CIK');
+  else fail(`sec companyFromTitle → ${sec.companyFromTitle('D - Acme Robotics, Inc. (0001234567) (Filer)')}`);
+  if (sec.filedDateFromSummary('Filed: 2026-06-18 AccNo: x') === '2026-06-18') pass('sec filedDateFromSummary extracts the filing date');
+  else fail('sec filedDateFromSummary failed');
+  if (sec.filerLooksOperating('Acme Robotics Inc') && !sec.filerLooksOperating('Cynosure Partners IV Offshore, LP')) {
+    pass('sec filerLooksOperating drops fund/SPV names, keeps operating companies');
+  } else fail('sec filerLooksOperating heuristic wrong');
+
+  const secCtx = { fetchText: async () => atom.replace('Beta &amp; Co', 'Gamma Labs Inc'), fetchJson: async () => { throw new Error('no'); } };
+  const secLeads = await secP.fetch(secCtx, {});
+  if (secLeads.length === 1 && secLeads[0].company === 'Gamma Labs Inc' && secLeads[0].source === 'sec-formd' && secLeads[0].date === '2026-06-18') {
+    pass('sec-formd.fetch parses Atom entries into leads');
+  } else fail(`sec-formd.fetch → ${JSON.stringify(secLeads)}`);
+  let secEvil = false;
+  try { sec.assertSecUrl('https://evil.example.com/x'); } catch { secEvil = true; }
+  if (secEvil) pass('sec assertSecUrl rejects off-allowlist hosts'); else fail('sec assertSecUrl should reject');
+
+  // ── techcrunch ──
+  const tc = (await import(pathToFileURL(join(ROOT, 'funding-sources/techcrunch.mjs')).href));
+  const tcP = tc.default;
+  if (tc.isFundingHeadline('Acme raises $5M Series A') && !tc.isFundingHeadline('Acme launches new product')) pass('tc isFundingHeadline matches funding verbs only');
+  else fail('tc isFundingHeadline wrong');
+  if (tc.companyFromHeadline('Orbio raises $21 million to automate hiring') === 'Orbio') pass('tc companyFromHeadline takes text before the funding verb');
+  else fail(`tc companyFromHeadline → ${tc.companyFromHeadline('Orbio raises $21 million to automate hiring')}`);
+  if (tc.amountFromHeadline('Acme raises $21 million') === '$21million') pass('tc amountFromHeadline extracts the amount');
+  else fail(`tc amountFromHeadline → ${tc.amountFromHeadline('Acme raises $21 million')}`);
+
+  const tcCtx = { fetchText: async () => '<rss><channel><item><title>Delta raises $10M Series B</title><link>https://techcrunch.com/d</link></item><item><title>Opinion: the state of VC</title><link>https://techcrunch.com/o</link></item></channel></rss>' };
+  const tcLeads = await tcP.fetch(tcCtx);
+  if (tcLeads.length === 1 && tcLeads[0].company === 'Delta' && tcLeads[0].amount === '$10M') {
+    pass('techcrunch.fetch filters to funding headlines and extracts the company');
+  } else fail(`techcrunch.fetch → ${JSON.stringify(tcLeads)}`);
+
+  // ── yc ──
+  const yc = (await import(pathToFileURL(join(ROOT, 'funding-sources/yc.mjs')).href));
+  const ycP = yc.default;
+  const ycLead = yc.parseYcCompany({ name: 'Ploy', batch: 'Summer 2026', website: 'https://ploy.io', url: 'https://ycombinator.com/companies/ploy', team_size: 14, all_locations: 'SF', industry: 'B2B', one_liner: 'AI ops', launched_at: 1718841600 });
+  if (ycLead && ycLead.company === 'Ploy' && ycLead.teamSize === 14 && ycLead.batch === 'Summer 2026' && ycLead.url === 'https://ploy.io' && ycLead.signal.includes('Summer 2026')) {
+    pass('yc parseYcCompany normalizes a company record');
+  } else fail(`yc parseYcCompany → ${JSON.stringify(ycLead)}`);
+  if (yc.parseYcCompany({ batch: 'x' }) === null) pass('yc parseYcCompany returns null without a name');
+  else fail('yc parseYcCompany should reject nameless');
+
+  const ycCtx = { fetchJson: async () => ([
+    { name: 'Ploy', batch: 'Summer 2026', team_size: 14 },
+    { name: 'Tiny', batch: 'Summer 2026', team_size: 3 },
+    { name: 'Wint', batch: 'Winter 2025', team_size: 30 },
+  ]) };
+  const ycLeads = await ycP.fetch(ycCtx, { minTeam: 10 });
+  if (ycLeads.length === 2 && ycLeads.every(l => l.teamSize >= 10)) pass('yc.fetch applies minTeam filter');
+  else fail(`yc.fetch minTeam → ${JSON.stringify(ycLeads.map(l => l.company))}`);
+  const ycBatch = await ycP.fetch(ycCtx, { batch: 'Winter 2025' });
+  if (ycBatch.length === 1 && ycBatch[0].company === 'Wint') pass('yc.fetch applies batch filter');
+  else fail(`yc.fetch batch → ${JSON.stringify(ycBatch.map(l => l.company))}`);
+  let ycEvil = false;
+  try { yc.assertYcUrl('https://evil.example.com'); } catch { ycEvil = true; }
+  if (ycEvil) pass('yc assertYcUrl rejects off-allowlist hosts'); else fail('yc assertYcUrl should reject');
+
+  // ── funding.mjs orchestrator ──
+  const funding = await import(pathToFileURL(join(ROOT, 'funding.mjs')).href);
+  if (funding.normalizeCompany('Acme, Inc.') === 'acmeinc') pass('funding normalizeCompany lowercases + strips punctuation');
+  else fail('funding normalizeCompany wrong');
+
+  const sources = await funding.loadSources();
+  if (['sec-formd', 'techcrunch', 'yc'].every(id => sources.has(id))) pass('funding loadSources discovers all three sources');
+  else fail(`funding loadSources → ${[...sources.keys()].join(',')}`);
+
+  // mergeLeads: dedup across sources, blocklist skip, tracked skip/flag
+  const raw = [
+    { company: 'Acme', source: 'yc', signal: 'YC S26', url: 'https://acme.io', teamSize: 20, location: 'SF' },
+    { company: 'acme', source: 'techcrunch', signal: 'Acme raises $5M', url: 'https://tc.com/acme' },
+    { company: 'Emerson', source: 'techcrunch', signal: 'Emerson raises', url: 'https://tc.com/e' },
+    { company: 'Beta', source: 'sec-formd', signal: 'Form D', url: 'https://sec.gov/b' },
+  ];
+  const merged = funding.mergeLeads(raw, { blocklist: new Set(['emerson']), tracked: new Set(['beta']) });
+  const acme = merged.find(l => funding.normalizeCompany(l.company) === 'acme');
+  if (merged.length === 1 && acme && acme.sources.length === 2 && acme.signals.length === 2 && acme.teamSize === 20) {
+    pass('funding mergeLeads dedups across sources, drops blocklist + tracked by default');
+  } else fail(`funding mergeLeads → ${JSON.stringify(merged.map(l => ({ c: l.company, s: l.sources })))}`);
+
+  const withTracked = funding.mergeLeads(raw, { blocklist: new Set(['emerson']), tracked: new Set(['beta']), includeTracked: true });
+  const beta = withTracked.find(l => l.company === 'Beta');
+  if (beta && beta.inTracker === true && !withTracked.find(l => l.company === 'Emerson')) {
+    pass('funding mergeLeads --include-tracked surfaces tracked leads flagged, still drops blocklist');
+  } else fail('funding mergeLeads includeTracked behavior wrong');
+
+  // ── gate accepts outreach drafts (Task E ↔ Task D wiring) ──
+  const gate = await import(pathToFileURL(join(ROOT, 'discord-gate.mjs')).href);
+  const outHdr = gate.parseReportHeader('# Outreach: Acme — VP Eng\n\n**URL:** https://acme.io\n**Score:** 4/5\n');
+  if (outHdr.company === 'Acme' && outHdr.role === 'VP Eng' && outHdr.url === 'https://acme.io') {
+    pass('gate parseReportHeader also parses "# Outreach:" drafts');
+  } else fail(`gate Outreach header → ${JSON.stringify(outHdr)}`);
+
+} catch (e) {
+  fail(`funding leads tests crashed: ${e.message}`);
+}
+
 // ── SUMMARY ─────────────────────────────────────────────────────
 
 console.log('\n' + '='.repeat(50));

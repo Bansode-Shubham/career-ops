@@ -65,6 +65,8 @@ AI-powered job search automation built on Claude Code: pipeline tracking, offer 
 | `followup-cadence.mjs` | Follow-up cadence calculator (JSON output) |
 | `data/follow-ups.md` | Follow-up history tracker |
 | `scan.mjs` | Zero-token portal scanner — hits Greenhouse/Ashby/Lever APIs directly, zero LLM cost |
+| `funding.mjs` | Funding/hiring lead finder (SEC Form D, TechCrunch RSS, YC) — zero LLM cost, suggest-only |
+| `discord-gate.mjs` | Human approval gate over Discord (reactions + REST poll); nothing sends without a logged approval |
 | `check-liveness.mjs` | Job posting liveness checker |
 | `liveness-core.mjs` | Shared liveness logic (expired signals win over generic Apply text) |
 | `reports/` | Evaluation reports (format: `{###}-{company-slug}-{YYYY-MM-DD}.md`). Blocks A-F + G (Posting Legitimacy), plus `## Machine Summary` YAML for downstream scripts. Header includes `**Legitimacy:** {tier}`. |
@@ -91,6 +93,7 @@ You can invoke the command center or any of its modes directly within your CLI:
 * `interview-prep` — Generate interview preparation guide
 * `interview` — Onboarding/on-demand interview
 * `contacto` — Generate LinkedIn outreach message
+* `outreach` — Draft outreach to funded/hiring companies (via funding.mjs), gated for approval
 * `deep` — Execute deep company research
 * `training` — Evaluate course/cert against North Star
 * `project` — Evaluate portfolio project idea
@@ -231,6 +234,7 @@ Default modes are in `modes/` (English). Additional language-specific modes are 
 | Asks to evaluate offer | `oferta` |
 | Asks to compare offers | `ofertas` |
 | Wants LinkedIn outreach | `contacto` |
+| Wants outreach to funded/hiring companies | `outreach` |
 | Asks for company research | `deep` |
 | Preps for interview at specific company | `interview-prep` |
 | Wants interactive profile/CV onboarding | `interview` |
