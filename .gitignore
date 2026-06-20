@@ -35,6 +35,7 @@ writing-samples/*
 
 # User config and customization (never auto-updated)
 config/profile.yml
+config/assets.yml
 portals.yml
 modes/_profile.md
 .update-dismissed

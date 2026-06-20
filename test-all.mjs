@@ -4666,6 +4666,46 @@ try {
   fail(`backup tests crashed: ${e.message}`);
 }
 
+// ── 34. ASSETS LIBRARY (links / bios / projects / references) ───────
+console.log('\n34. Assets library');
+try {
+  const as = await import(pathToFileURL(join(ROOT, 'assets.mjs')).href);
+
+  const tmp = mkdtempSync(join(tmpdir(), 'co-assets-'));
+  const file = join(tmp, 'assets.yml');
+  writeFileSync(file,
+    'links:\n  github: https://github.com/x\n' +
+    'projects:\n  - name: P1\n    url: https://p1\n' +
+    'references:\n  - name: R1\n    contact: r1@x.com\n    shareable: false\n' +
+    '  - name: R2\n    contact: r2@x.com\n    shareable: true\n');
+
+  const a = as.loadAssets(file);
+  if (as.getAssetPath(a, 'links.github') === 'https://github.com/x' &&
+      as.getAssetPath(a, 'projects.0.name') === 'P1' &&
+      as.getAssetPath(a, 'nope.missing') === undefined) {
+    pass('getAssetPath resolves dotted paths + array indices, undefined when absent');
+  } else fail('getAssetPath wrong');
+
+  const red = as.redactReferences(a).references;
+  if (red[0].contact === undefined && red[0].contact_withheld === true && red[1].contact === 'r2@x.com') {
+    pass('redactReferences withholds contacts unless shareable: true');
+  } else fail(`redactReferences → ${JSON.stringify(red)}`);
+
+  // loadAssets is forgiving: missing file → {}.
+  if (Object.keys(as.loadAssets(join(tmp, 'nope.yml'))).length === 0) pass('loadAssets returns {} for a missing file');
+  else fail('loadAssets missing-file wrong');
+
+  // The committed example parses and carries the expected sections.
+  const example = as.loadAssets(join(ROOT, 'config/assets.example.yml'));
+  if (example.bios && example.links && example.projects && example.references) {
+    pass('config/assets.example.yml is valid YAML with the expected sections');
+  } else fail(`assets.example.yml sections → ${Object.keys(example).join(',')}`);
+
+  rmSync(tmp, { recursive: true, force: true });
+} catch (e) {
+  fail(`assets library tests crashed: ${e.message}`);
+}
+
 // ── SUMMARY ─────────────────────────────────────────────────────
 
 console.log('\n' + '='.repeat(50));

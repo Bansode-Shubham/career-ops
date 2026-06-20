@@ -1,0 +1,42 @@
+# Assets Library — config/assets.yml (User Layer; copy this file, then edit)
+# Reusable building blocks the apply / outreach / cover-letter steps pull from,
+# so you never re-type the same links, bios, or project blurbs per application.
+#
+# Read with: node assets.mjs list   |   node assets.mjs get links.github
+# Reference CONTACTS are gated — see the `references` note below.
+
+# Short / medium / long self-descriptions for free-text fields and bios.
+bios:
+  short: "One-line bio — e.g. 'Full-stack + GenAI engineer who ships end-to-end.'"
+  medium: "2–3 sentences. Lead with what you do + your strongest proof."
+  long: "A short paragraph for 'tell us about yourself' fields and cover-letter openers."
+
+# Canonical links. Leave blank if you don't have one yet.
+links:
+  portfolio: ""
+  github: ""
+  linkedin: ""
+  playstore: ""
+  twitter: ""
+  resume_pdf: ""
+
+# Showcase projects — name, link, and a one-line blurb the apply step can drop in.
+projects:
+  - name: "Project name"
+    url: ""
+    blurb: "What it is + the one metric/fact that makes it land."
+
+# References. CONTACTS ARE PRIVATE BY DEFAULT.
+# - `shareable: false` (default) → the contact is never surfaced.
+# - Only set `shareable: true` AND give explicit approval to share a contact.
+references:
+  - name: "Reference name"
+    relationship: "e.g. Former manager"
+    contact: ""            # email/phone — withheld unless shareable: true
+    blurb: "One line on how they'd vouch for you."
+    shareable: false
+
+availability:
+  notice_period: "e.g. 90 days"
+  timezone: "e.g. Asia/Kolkata (IST)"
+  earliest_start: ""
