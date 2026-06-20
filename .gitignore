@@ -7,7 +7,9 @@ data/scan-history.tsv
 data/approvals.md
 data/discord-gate.json
 data/.paused
+data/interview-watch.json
 backups/
+drafts/
 data/parser-output/**/*.json
 !data/parser-output/.gitkeep
 !data/parser-output/**/.gitkeep

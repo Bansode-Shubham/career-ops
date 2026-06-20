@@ -4706,6 +4706,55 @@ try {
   fail(`assets library tests crashed: ${e.message}`);
 }
 
+// ── 35. INTERVIEW-REPLY WATCHER (detect → gated draft) ──────────────
+console.log('\n35. Interview-reply watcher');
+try {
+  const ic = await import(pathToFileURL(join(ROOT, 'interview-core.mjs')).href);
+  const iw = await import(pathToFileURL(join(ROOT, 'interview-watch.mjs')).href);
+
+  // Classification: rejection beats interview; recruiter; other.
+  if (ic.classifyEmail({ subject: 'Update', body: 'Unfortunately we are not moving forward, though we had an interview slot' }).type === 'rejection' &&
+      ic.classifyEmail({ subject: 'Next steps', body: "let's schedule a call" }).type === 'interview' &&
+      ic.classifyEmail({ body: 'I am a recruiter with an exciting opportunity' }).type === 'recruiter' &&
+      ic.classifyEmail({ subject: 'Weekly digest', body: 'news' }).type === 'other') {
+    pass('classifyEmail: rejection > interview, plus recruiter/other');
+  } else fail('classifyEmail wrong');
+
+  const cos = ic.companiesFromTracker('| # | Date | Company | Role |\n|---|---|---|---|\n| 1 | 2026-06-20 | Mistral | Eng |\n| 2 | 2026-06-20 | N26 | BE |');
+  if (cos.length === 2 && cos.includes('Mistral')) pass('companiesFromTracker reads the company column'); else fail(`companiesFromTracker → ${JSON.stringify(cos)}`);
+
+  if (ic.matchApplication({ from: 'jane@careers.mistral.ai', subject: 'x' }, cos) === 'Mistral' &&
+      ic.matchApplication({ from: 'no-reply@greenhouse.io', subject: 'Your N26 application' }, cos) === 'N26' &&
+      ic.matchApplication({ from: 'a@random.com', subject: 'hi' }, cos) === null) {
+    pass('matchApplication matches by sender domain, then by name in text, else null');
+  } else fail('matchApplication wrong');
+
+  // processEmails: filters, dedup via seen, includeRejections toggle.
+  const emails = [
+    { id: 'm1', from: 'jane@mistral.ai', subject: 'Next steps', body: 'schedule a call' },
+    { id: 'm2', from: 'hr@n26.com', subject: 'Update', body: 'unfortunately not moving forward' },
+    { id: 'm3', from: 'x@random.com', subject: 'interview', body: 'schedule a call' },
+    { id: 'm4', from: 'jane@mistral.ai', subject: 'Next steps', body: 'schedule a call' },
+  ];
+  const base = iw.processEmails(emails, { companies: cos, seen: ['m4'] });
+  if (base.drafts.length === 1 && base.drafts[0].company === 'Mistral' && base.drafts[0].id === 'm1') {
+    pass('processEmails keeps matched interviews, drops rejections/no-match, honors seen');
+  } else fail(`processEmails → ${JSON.stringify(base.drafts.map(d => d.id))}`);
+
+  const withRej = iw.processEmails(emails, { companies: cos, includeRejections: true });
+  if (withRej.drafts.some(d => d.type === 'rejection' && d.company === 'N26')) {
+    pass('processEmails --include-rejections surfaces matched rejections');
+  } else fail('processEmails includeRejections wrong');
+
+  // Gate now parses "# Interview:" draft headers.
+  const gate = await import(pathToFileURL(join(ROOT, 'discord-gate.mjs')).href);
+  const h = gate.parseReportHeader('# Interview: Mistral — Applied AI Engineer\n\n**URL:** https://x\n');
+  if (h.company === 'Mistral' && h.role === 'Applied AI Engineer') pass('gate parseReportHeader parses "# Interview:" drafts');
+  else fail(`gate Interview header → ${JSON.stringify(h)}`);
+} catch (e) {
+  fail(`interview watcher tests crashed: ${e.message}`);
+}
+
 // ── SUMMARY ─────────────────────────────────────────────────────
 
 console.log('\n' + '='.repeat(50));

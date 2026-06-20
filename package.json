@@ -47,7 +47,9 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "dotenv": "^17.0.0",
+    "imapflow": "^1.4.2",
     "js-yaml": "^4.1.1",
+    "mailparser": "^3.9.11",
     "playwright": "1.61.0"
   }
 }

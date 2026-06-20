@@ -123,7 +123,7 @@ export function validateStatus(status, states) {
  */
 export function parseReportHeader(markdown) {
   const text = String(markdown || '');
-  const titleMatch = text.match(/^#\s*(?:Evaluation|Evaluación|Outreach):\s*(.+?)\s*$/m);
+  const titleMatch = text.match(/^#\s*(?:Evaluation|Evaluación|Outreach|Interview):\s*(.+?)\s*$/m);
   let company = '', role = '';
   if (titleMatch) {
     // Split on the first em/en dash or hyphen-with-spaces separating company — role.
