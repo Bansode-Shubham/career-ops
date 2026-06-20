@@ -4537,6 +4537,54 @@ try {
   fail(`funding leads tests crashed: ${e.message}`);
 }
 
+// ── 31. BLOCKLIST + COOLDOWN (shared scan/outreach enforcement) ─────
+console.log('\n31. Blocklist + cooldown');
+try {
+  const bl = await import(pathToFileURL(join(ROOT, '_blocklist.mjs')).href);
+  const terms = ['emerson', 'nationalinstruments', 'aspentech'];
+
+  // Substring matching catches parent + same-named subsidiaries.
+  if (bl.isBlocked('Emerson', terms) &&
+      bl.isBlocked('Emerson Electric Co.', terms) &&
+      bl.isBlocked('Emerson Automation Solutions', terms)) {
+    pass('isBlocked substring-matches the parent and same-named subsidiaries');
+  } else fail('isBlocked failed on Emerson variants');
+
+  // Aliases that do not share the parent name still match.
+  if (bl.isBlocked('National Instruments', terms) &&
+      bl.isBlocked('AspenTech Inc', terms) &&
+      bl.isBlocked('Aspen Technology LLC', terms)) {
+    pass('isBlocked matches non-parent-named aliases (NI, AspenTech)');
+  } else fail('isBlocked failed on alias subsidiaries');
+
+  // No false positives on unrelated companies.
+  if (!bl.isBlocked('Mistral', terms) && !bl.isBlocked('Anita', terms) && !bl.isBlocked('', terms)) {
+    pass('isBlocked rejects unrelated companies and empty input');
+  } else fail('isBlocked false-positived on an unrelated company');
+
+  // Cooldown: a tracker row inside the window is recent; outside it re-surfaces.
+  const tmp = join(ROOT, 'batch', `_blocklist-test-${Date.now()}.md`);
+  mkdirSync(join(ROOT, 'batch'), { recursive: true });
+  writeFileSync(tmp,
+    '| # | Date | Company | Role | Score | Status |\n' +
+    '|---|------|---------|------|-------|--------|\n' +
+    '| 1 | 2026-06-20 | Acme | Engineer | 4/5 | Evaluated |\n');
+  const inWindow = bl.loadRecentCompanies(tmp, 8, new Date('2026-06-21'));
+  const outWindow = bl.loadRecentCompanies(tmp, 8, new Date('2026-12-01'));
+  if (inWindow.has('acme') && !outWindow.has('acme')) {
+    pass('loadRecentCompanies flags within the cooldown window and clears after it');
+  } else fail(`loadRecentCompanies window wrong → in:${[...inWindow]} out:${[...outWindow]}`);
+  rmSync(tmp, { force: true });
+
+  // Config loads terms + cooldown from the real profile (Emerson must be blocked).
+  const cfg = bl.loadBlocklistConfig(join(ROOT, 'config/profile.yml'));
+  if (bl.isBlocked('Emerson', cfg.terms) && cfg.cooldownWeeks >= 1) {
+    pass('loadBlocklistConfig blocks the current employer from config/profile.yml');
+  } else fail(`loadBlocklistConfig → terms:${cfg.terms} cooldown:${cfg.cooldownWeeks}`);
+} catch (e) {
+  fail(`blocklist + cooldown tests crashed: ${e.message}`);
+}
+
 // ── SUMMARY ─────────────────────────────────────────────────────
 
 console.log('\n' + '='.repeat(50));
