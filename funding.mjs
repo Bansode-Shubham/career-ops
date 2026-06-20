@@ -20,20 +20,23 @@
  * a descriptive UA with contact info on EDGAR requests).
  */
 
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
-import yaml from 'js-yaml';
 import { makeHttpCtx } from './providers/_http.mjs';
+import {
+  normalizeCompany,
+  isBlocked,
+  loadBlocklistConfig,
+  loadRecentCompanies,
+} from './_blocklist.mjs';
+
+// Re-exported so existing importers/tests keep resolving funding.normalizeCompany.
+export { normalizeCompany };
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SOURCES_DIR = join(ROOT, 'funding-sources');
 const PROFILE_PATH = join(ROOT, 'config/profile.yml');
-
-/** Lowercase-alphanumeric company key for dedup + blocklist/tracker matching. */
-export function normalizeCompany(name) {
-  return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-}
 
 /** Load source modules from funding-sources/ (skipping _-prefixed helpers). */
 export async function loadSources(dir = SOURCES_DIR) {
@@ -48,33 +51,25 @@ export async function loadSources(dir = SOURCES_DIR) {
   return sources;
 }
 
-/** Read the blocklisted company names from config/profile.yml. */
+/** Normalized blocklist terms from config/profile.yml (substring-matched). */
 export function loadBlocklist(profilePath = PROFILE_PATH) {
-  if (!existsSync(profilePath)) return new Set();
-  try {
-    const doc = yaml.load(readFileSync(profilePath, 'utf-8'));
-    const names = (doc?.blocklist?.companies || []).concat(doc?.blocklist?.subsidiaries || []);
-    return new Set(names.map(normalizeCompany).filter(Boolean));
-  } catch {
-    return new Set();
-  }
+  return loadBlocklistConfig(profilePath).terms;
 }
 
-/** Read normalized company names already present in the tracker. */
-export function loadTrackedCompanies(root = ROOT) {
-  const path = existsSync(join(root, 'data/applications.md'))
+/** Resolve the tracker path (data/ layout preferred, root fallback). */
+function applicationsPath(root = ROOT) {
+  return existsSync(join(root, 'data/applications.md'))
     ? join(root, 'data/applications.md')
     : join(root, 'applications.md');
-  if (!existsSync(path)) return new Set();
-  const set = new Set();
-  for (const line of readFileSync(path, 'utf-8').split('\n')) {
-    if (!line.startsWith('|') || line.includes('---')) continue;
-    const cells = line.split('|').map(c => c.trim());
-    // Company is the 3rd data cell (col index 3 with the leading empty cell).
-    const company = cells[3];
-    if (company && company.toLowerCase() !== 'company') set.add(normalizeCompany(company));
-  }
-  return set;
+}
+
+/**
+ * Companies in the tracker within the re-apply cooldown window. Same 8-week
+ * (default) semantics the scanner uses — after the window a company can be
+ * surfaced for outreach again. See _blocklist.mjs.
+ */
+export function loadTrackedCompanies(root = ROOT, cooldownWeeks) {
+  return loadRecentCompanies(applicationsPath(root), cooldownWeeks);
 }
 
 /**
@@ -83,14 +78,15 @@ export function loadTrackedCompanies(root = ROOT) {
  * merged list. Exported for tests.
  *
  * @param {Array<object>} rawLeads
- * @param {{blocklist?: Set<string>, tracked?: Set<string>, includeBlocked?: boolean, includeTracked?: boolean}} opts
+ * @param {{blocklist?: Iterable<string>, tracked?: Set<string>, includeBlocked?: boolean, includeTracked?: boolean}} opts
+ *   blocklist: normalized terms (substring-matched via isBlocked); tracked: normalized keys (exact).
  */
 export function mergeLeads(rawLeads, { blocklist = new Set(), tracked = new Set(), includeBlocked = false, includeTracked = false } = {}) {
   const byKey = new Map();
   for (const lead of rawLeads) {
     const key = normalizeCompany(lead.company);
     if (!key) continue;
-    const blocked = blocklist.has(key);
+    const blocked = isBlocked(lead.company, blocklist);
     const inTracker = tracked.has(key);
     if (blocked && !includeBlocked) continue;
     if (inTracker && !includeTracked) continue;
@@ -163,9 +159,10 @@ async function main() {
     }
   }
 
+  const blocklistCfg = loadBlocklistConfig(PROFILE_PATH);
   const merged = mergeLeads(rawLeads, {
-    blocklist: loadBlocklist(),
-    tracked: loadTrackedCompanies(),
+    blocklist: blocklistCfg.terms,
+    tracked: loadTrackedCompanies(ROOT, blocklistCfg.cooldownWeeks),
     includeBlocked: flags.includeBlocked,
     includeTracked: flags.includeTracked,
   });

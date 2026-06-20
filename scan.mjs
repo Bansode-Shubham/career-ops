@@ -36,12 +36,14 @@ import path from 'path';
 import yaml from 'js-yaml';
 
 import { makeHttpCtx } from './providers/_http.mjs';
+import { loadBlocklistConfig, isBlocked, loadRecentCompanies, normalizeCompany } from './_blocklist.mjs';
 
 const parseYaml = yaml.load;
 
 // ── Config ──────────────────────────────────────────────────────────
 
 const PORTALS_PATH = process.env.CAREER_OPS_PORTALS || 'portals.yml';
+const PROFILE_PATH = process.env.CAREER_OPS_PROFILE || 'config/profile.yml';
 const SCAN_HISTORY_PATH = 'data/scan-history.tsv';
 const PIPELINE_PATH = 'data/pipeline.md';
 const APPLICATIONS_PATH = 'data/applications.md';
@@ -421,22 +423,6 @@ export function loadSeenUrls(policy = {}) {
   return { seen, recheckEligible };
 }
 
-function loadSeenCompanyRoles() {
-  const seen = new Set();
-  if (existsSync(APPLICATIONS_PATH)) {
-    const text = readFileSync(APPLICATIONS_PATH, 'utf-8');
-    // Parse markdown table rows: | # | Date | Company | Role | ...
-    for (const match of text.matchAll(/\|[^|]+\|[^|]+\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/g)) {
-      const company = match[1].trim().toLowerCase();
-      const role = match[2].trim().toLowerCase();
-      if (company && role && company !== 'company') {
-        seen.add(`${company}::${role}`);
-      }
-    }
-  }
-  return seen;
-}
-
 // ── Pipeline writer ─────────────────────────────────────────────────
 
 function normalizeScanScalar(value) {
@@ -804,11 +790,16 @@ async function main() {
   console.log(`Scanning ${parts.join('; ')} via providers`);
   if (dryRun) console.log('(dry run — no files will be written)\n');
 
-  // 4. Load dedup sets
+  // 4. Load dedup sets + deterministic exclusions
   const historyPolicy = scanHistoryPolicy(config);
   const seenUrlState = loadSeenUrls(historyPolicy);
   const seenUrls = seenUrlState.seen;
-  const seenCompanyRoles = loadSeenCompanyRoles();
+  // Hard blocklist (current employer etc.) + re-apply cooldown — enforced in
+  // code, never left to the LLM. See _blocklist.mjs / config/profile.yml.
+  const blocklist = loadBlocklistConfig(PROFILE_PATH);
+  const recentCompanies = loadRecentCompanies(APPLICATIONS_PATH, blocklist.cooldownWeeks);
+  // Intra-scan company::role dedup so two providers can't double-queue one role.
+  const seenCompanyRoles = new Set();
 
   // 5. Fetch from each target
   const date = new Date().toISOString().slice(0, 10);
@@ -817,6 +808,8 @@ async function main() {
   let totalFilteredLocation = 0;
   let totalFilteredSalary = 0;
   let totalFilteredContent = 0;
+  let totalBlocklisted = 0;
+  let totalCooldown = 0;
   let totalDupes = 0;
   const newOffers = [];
   const errors = [...resolveErrors];
@@ -847,6 +840,12 @@ async function main() {
       totalFound += jobs.length;
 
       for (const job of jobs) {
+        // Hard blocklist wins over everything — a blocklisted company must
+        // never reach pipeline.md, regardless of how good the role looks.
+        if (isBlocked(job.company, blocklist.terms)) {
+          totalBlocklisted++;
+          continue;
+        }
         if (!titleFilter(job.title)) {
           totalFilteredTitle++;
           continue;
@@ -865,6 +864,12 @@ async function main() {
         }
         if (seenUrls.has(job.url)) {
           totalDupes++;
+          continue;
+        }
+        // Re-apply cooldown — skip companies already in the tracker within the
+        // cooldown window; they re-surface once it elapses.
+        if (recentCompanies.has(normalizeCompany(job.company))) {
+          totalCooldown++;
           continue;
         }
         const key = `${job.company.toLowerCase()}::${job.title.toLowerCase()}`;
@@ -961,6 +966,8 @@ async function main() {
   console.log(`Filtered by location:  ${totalFilteredLocation} removed`);
   console.log(`Filtered by salary:   ${totalFilteredSalary} removed`);
   console.log(`Filtered by content:  ${totalFilteredContent} removed`);
+  if (totalBlocklisted > 0) console.log(`Blocklisted:           ${totalBlocklisted} skipped`);
+  if (totalCooldown > 0) console.log(`Cooldown (re-apply):   ${totalCooldown} skipped`);
   console.log(`Duplicates:            ${totalDupes} skipped`);
   if (historyPolicy.recheckAfterDays != null) {
     console.log(`Recheck eligible:      ${seenUrlState.recheckEligible} old scan-history URL(s)`);
